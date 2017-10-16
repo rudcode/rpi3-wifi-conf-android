@@ -1,4 +1,4 @@
-package io.brendanmyers.rpiconf;
+package com.digitalnativ.nativcast;
 
 import android.bluetooth.BluetoothDevice;
 import android.content.Context;
