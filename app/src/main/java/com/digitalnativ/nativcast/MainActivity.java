@@ -17,7 +17,9 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.IntentSender;
 import android.content.pm.PackageManager;
+import android.location.LocationManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.MotionEvent;
@@ -30,7 +32,17 @@ import android.widget.Toast;
 
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiManager;
-import android.location.LocationManager;
+
+import com.google.android.gms.common.ConnectionResult;
+import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.common.api.PendingResult;
+import com.google.android.gms.common.api.ResultCallback;
+import com.google.android.gms.common.api.Status;
+import com.google.android.gms.location.LocationRequest;
+import com.google.android.gms.location.LocationServices;
+import com.google.android.gms.location.LocationSettingsRequest;
+import com.google.android.gms.location.LocationSettingsResult;
+import com.google.android.gms.location.LocationSettingsStatusCodes;
 
 public class MainActivity extends Activity {
     BluetoothSocket mmSocket;
@@ -44,7 +56,7 @@ public class MainActivity extends Activity {
 
     private WifiManager wifi;
     private WifiScanReceiver wifiReceiver = new WifiScanReceiver();
-    private LocationManager location;
+    private LocationManager locationManager;
 
     private List<String> ssidList = new ArrayList<String>();
     private ArrayList<BluetoothDevice> btDevicesList = new ArrayList<BluetoothDevice>();
@@ -55,6 +67,9 @@ public class MainActivity extends Activity {
     final byte delimiter = 33;
     int readBufferPosition = 0;
     final int PERMISSIONS_REQUEST_CODE_ACCESS_COARSE_LOCATION = 12345;
+    final static int REQUEST_LOCATION = 199;
+
+    private GoogleApiClient googleApiClient;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -101,24 +116,42 @@ public class MainActivity extends Activity {
         });
 
         //wifi dropdown list
-        wifiSpinnerArrayAdapter = new ArrayAdapter<String>(MainActivity.this, android.R.layout.simple_spinner_item, ssidList);
+        wifiSpinnerArrayAdapter = new ArrayAdapter<String>(getApplicationContext(), android.R.layout.simple_spinner_item, ssidList);
         wifiSpinnerArrayAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item); // The drop down view
         wifiSpinner.setAdapter(wifiSpinnerArrayAdapter);
 
         btDevicesSpinnerArrayAdapter = new DeviceAdapter(this, R.layout.spinner_devices, btDevicesList);
         btDevicesSpinner.setAdapter(btDevicesSpinnerArrayAdapter);
 
-        wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-        location = (LocationManager) getApplicationContext().getSystemService(Context.LOCATION_SERVICE);
+        locationManager = (LocationManager) getApplicationContext().getSystemService(Context.LOCATION_SERVICE);
 
-        //registerReceiver(wifiReceiver, new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION));
-        refreshWifi();
-        refreshDevices();
+        wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
     }
 
     @Override
     protected void onResume() {
+        if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) && hasGPSDevice(getApplicationContext())) {
+            refreshWifi();
+        }
+        else {
+            if (!hasGPSDevice(getApplicationContext())) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        toast.setText("GPS Not Supported");
+                        toast.setDuration(Toast.LENGTH_SHORT);
+                        toast.show();
+                    }
+                });
+            }
+
+            if (!locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) && hasGPSDevice(getApplicationContext())) {
+                enableLoc();
+            }
+        }
         registerReceiver(wifiReceiver, new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION));
+        refreshDevices();
+        refreshWifi();
         super.onResume();
     }
 
@@ -130,6 +163,80 @@ public class MainActivity extends Activity {
             // If Receiver not registered
         }
         super.onPause();
+    }
+
+    private boolean hasGPSDevice(Context context) {
+        final LocationManager mgr = (LocationManager) context
+                .getSystemService(Context.LOCATION_SERVICE);
+        if (mgr == null)
+            return false;
+        final List<String> providers = mgr.getAllProviders();
+        if (providers == null)
+            return false;
+        return providers.contains(LocationManager.GPS_PROVIDER);
+    }
+
+    private void enableLoc() {
+        if (googleApiClient == null) {
+            googleApiClient = new GoogleApiClient.Builder(getApplicationContext())
+                    .addApi(LocationServices.API)
+                    .addConnectionCallbacks(new GoogleApiClient.ConnectionCallbacks() {
+                        @Override
+                        public void onConnected(Bundle bundle) {
+
+                        }
+
+                        @Override
+                        public void onConnectionSuspended(int i) {
+                            googleApiClient.connect();
+                        }
+                    })
+                    .addOnConnectionFailedListener(new GoogleApiClient.OnConnectionFailedListener() {
+                        @Override
+                        public void onConnectionFailed(ConnectionResult connectionResult) {
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    toast.setText("Location Error");
+                                    toast.setDuration(Toast.LENGTH_SHORT);
+                                    toast.show();
+                                }
+                            });
+                        }
+                    }).build();
+            googleApiClient.connect();
+
+            LocationRequest locationRequest = LocationRequest.create();
+            locationRequest.setPriority(LocationRequest.PRIORITY_LOW_POWER);
+            locationRequest.setInterval(30 * 1000);
+            locationRequest.setFastestInterval(5 * 1000);
+            LocationSettingsRequest.Builder builder = new LocationSettingsRequest.Builder()
+                    .addLocationRequest(locationRequest);
+
+            builder.setAlwaysShow(true);
+
+            PendingResult<LocationSettingsResult> result =
+                    LocationServices.SettingsApi.checkLocationSettings(googleApiClient, builder.build());
+            result.setResultCallback(new ResultCallback<LocationSettingsResult>() {
+                @Override
+                public void onResult(LocationSettingsResult result) {
+                    final Status status = result.getStatus();
+                    switch (status.getStatusCode()) {
+                        case LocationSettingsStatusCodes.RESOLUTION_REQUIRED:
+                            try {
+                                // Show the dialog by calling startResolutionForResult(),
+                                // and check the result in onActivityResult().
+                                status.startResolutionForResult(MainActivity.this, REQUEST_LOCATION);
+
+                                refreshWifi();
+                            } catch (IntentSender.SendIntentException e) {
+                                // Ignore the error.
+                            }
+                            break;
+                    }
+                }
+            });
+        }
     }
 
     public class WifiScanReceiver extends BroadcastReceiver{
@@ -171,9 +278,6 @@ public class MainActivity extends Activity {
             wifi.setWifiEnabled(true);
             writeOutput("Enable wifi...");
             while(!wifi.isWifiEnabled());
-        }
-        if(!location.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-            writeOutput("Location disabled.");
         }
         wifi.startScan();
     }
